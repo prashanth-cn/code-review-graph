@@ -29,6 +29,7 @@ import logging
 import os
 from importlib.metadata import version as pkg_version
 from pathlib import Path
+from typing import Optional
 
 
 def _get_version() -> str:
@@ -54,12 +55,12 @@ def _print_banner() -> None:
     version = _get_version()
 
     # ANSI escape codes
-    c = "\033[36m" if color else ""   # cyan — graph art
-    y = "\033[33m" if color else ""   # yellow — center node
-    b = "\033[1m" if color else ""    # bold
-    d = "\033[2m" if color else ""    # dim
-    g = "\033[32m" if color else ""   # green — commands
-    r = "\033[0m" if color else ""    # reset
+    c = "\033[36m" if color else ""  # cyan — graph art
+    y = "\033[33m" if color else ""  # yellow — center node
+    b = "\033[1m" if color else ""  # bold
+    d = "\033[2m" if color else ""  # dim
+    g = "\033[32m" if color else ""  # green — commands
+    r = "\033[0m" if color else ""  # reset
 
     print(f"""
 {c}  ●──●──●{r}
@@ -69,7 +70,7 @@ def _print_banner() -> None:
 {c}  ●──●──●{r}       {d}smarter code reviews{r}
 
   {b}Commands:{r}
-    {g}install{r}     Set up Claude Code integration
+    {g}install{r}     Set up MCP for Claude/Gemini/Cursor/OpenCode
     {g}init{r}        Alias for install
     {g}build{r}       Full graph build {d}(parse all files){r}
     {g}update{r}      Incremental update {d}(changed files only){r}
@@ -82,51 +83,210 @@ def _print_banner() -> None:
 """)
 
 
+def _get_mcp_config(with_repo: bool = False, repo_path: Optional[str] = None) -> dict:
+    """Build the MCP server configuration."""
+    args = ["code-review-graph", "serve"]
+    if with_repo and repo_path:
+        args.extend(["--repo", repo_path])
+    return {
+        "mcpServers": {
+            "code-review-graph": {
+                "command": "uvx",
+                "args": args,
+            }
+        }
+    }
+
+
 def _handle_init(args: argparse.Namespace) -> None:
-    """Set up .mcp.json in the project root for Claude Code integration."""
+    """Set up MCP server configurations for supported AI tools."""
     from .incremental import find_repo_root
 
     repo_root = Path(args.repo) if args.repo else find_repo_root()
     if not repo_root:
         repo_root = Path.cwd()
 
-    mcp_path = repo_root / ".mcp.json"
     dry_run = getattr(args, "dry_run", False)
+    repo_path = str(repo_root)
 
-    mcp_config = {
-        "mcpServers": {
-            "code-review-graph": {
-                "command": "uvx",
-                "args": ["code-review-graph", "serve"],
-            }
-        }
-    }
+    tools = []
+    if args.all:
+        tools = ["claude", "gemini", "antigravity", "cursor", "opencode"]
+    else:
+        if args.claude:
+            tools.append("claude")
+        if args.gemini:
+            tools.append("gemini")
+        if args.antigravity:
+            tools.append("antigravity")
+        if args.cursor:
+            tools.append("cursor")
+        if args.opencode:
+            tools.append("opencode")
 
-    # Merge into existing .mcp.json if present
+    if not tools:
+        tools = ["claude"]
+
+    for tool in tools:
+        if tool == "claude":
+            result = _install_claude_code(repo_root, dry_run, repo_path)
+        elif tool == "gemini":
+            result = _install_gemini_cli(dry_run, repo_path)
+        elif tool == "antigravity":
+            result = _install_antigravity(repo_root, dry_run, repo_path)
+        elif tool == "cursor":
+            result = _install_cursor(dry_run, repo_path)
+        elif tool == "opencode":
+            result = _install_opencode(dry_run, repo_path)
+        else:
+            result = f"Unknown tool: {tool}"
+        print(result)
+
+    print()
+    if not dry_run:
+        print("Next steps:")
+        print("  1. code-review-graph build    # build the knowledge graph")
+        print("  2. Restart your AI tool      # to pick up the new MCP server")
+
+
+def _install_claude_code(repo_root: Path, dry_run: bool, repo_path: str) -> str:
+    """Install for Claude Code."""
+    mcp_path = repo_root / ".mcp.json"
+    mcp_config = _get_mcp_config(with_repo=False, repo_path=repo_path)
+
     if mcp_path.exists():
         try:
             existing = json.loads(mcp_path.read_text())
             if "code-review-graph" in existing.get("mcpServers", {}):
-                print(f"Already configured in {mcp_path}")
-                return
+                return f"Claude Code: Already configured in {mcp_path}"
             existing.setdefault("mcpServers", {}).update(mcp_config["mcpServers"])
             mcp_config = existing
         except (json.JSONDecodeError, KeyError):
-            print(f"Warning: existing {mcp_path} is malformed, overwriting.")
+            pass
 
     if dry_run:
         print(f"[dry-run] Would write to {mcp_path}:")
         print(json.dumps(mcp_config, indent=2))
-        print()
-        print("[dry-run] No files were modified.")
-        return
+        return f"[dry-run] Claude Code: Would create {mcp_path}"
 
     mcp_path.write_text(json.dumps(mcp_config, indent=2) + "\n")
-    print(f"Created {mcp_path}")
-    print()
-    print("Next steps:")
-    print("  1. code-review-graph build    # build the knowledge graph")
-    print("  2. Restart Claude Code        # to pick up the new MCP server")
+    return f"Claude Code: Created {mcp_path}"
+
+
+def _install_gemini_cli(dry_run: bool, repo_path: str) -> str:
+    """Install for Gemini CLI."""
+    gemini_dir = Path.home() / ".gemini"
+    settings_path = gemini_dir / "settings.json"
+    mcp_config = _get_mcp_config(with_repo=True, repo_path=repo_path)
+
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+            if "code-review-graph" in existing.get("mcpServers", {}):
+                return f"Gemini CLI: Already configured in {settings_path}"
+            existing.setdefault("mcpServers", {}).update(mcp_config["mcpServers"])
+            mcp_config = existing
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    if dry_run:
+        print(f"[dry-run] Would write to {settings_path}:")
+        print(json.dumps(mcp_config, indent=2))
+        return f"[dry-run] Gemini CLI: Would create {settings_path}"
+
+    gemini_dir.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(mcp_config, indent=2) + "\n")
+    return f"Gemini CLI: Created {settings_path}"
+
+
+def _install_antigravity(repo_root: Path, dry_run: bool, repo_path: str) -> str:
+    """Install for Antigravity."""
+    mcp_path = repo_root / ".vscode" / "mcp.json"
+    mcp_config = _get_mcp_config(with_repo=True, repo_path=repo_path)
+
+    if mcp_path.exists():
+        try:
+            existing = json.loads(mcp_path.read_text())
+            if "code-review-graph" in existing.get("mcpServers", {}):
+                return f"Antigravity: Already configured in {mcp_path}"
+            existing.setdefault("mcpServers", {}).update(mcp_config["mcpServers"])
+            mcp_config = existing
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    if dry_run:
+        print(f"[dry-run] Would write to {mcp_path}:")
+        print(json.dumps(mcp_config, indent=2))
+        return f"[dry-run] Antigravity: Would create {mcp_path}"
+
+    (repo_root / ".vscode").mkdir(parents=True, exist_ok=True)
+    mcp_path.write_text(json.dumps(mcp_config, indent=2) + "\n")
+    return f"Antigravity: Created {mcp_path}"
+
+
+def _install_cursor(dry_run: bool, repo_path: str) -> str:
+    """Install for Cursor/Windsurf (uses Cursor config)."""
+    cursor_dir = Path.home() / ".cursor"
+    cursor_path = cursor_dir / "mcp.json"
+    mcp_config = _get_mcp_config(with_repo=True, repo_path=repo_path)
+
+    if cursor_path.exists():
+        try:
+            existing = json.loads(cursor_path.read_text())
+            if "code-review-graph" in existing.get("mcpServers", {}):
+                return f"Cursor/Windsurf: Already configured in {cursor_path}"
+            existing.setdefault("mcpServers", {}).update(mcp_config["mcpServers"])
+            mcp_config = existing
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    if dry_run:
+        print(f"[dry-run] Would write to {cursor_path}:")
+        print(json.dumps(mcp_config, indent=2))
+        return f"[dry-run] Cursor/Windsurf: Would create {cursor_path}"
+
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+    cursor_path.write_text(json.dumps(mcp_config, indent=2) + "\n")
+    return f"Cursor/Windsurf: Created {cursor_path}"
+
+
+def _install_opencode(dry_run: bool, repo_path: str) -> str:
+    """Install for OpenCode."""
+    opencode_dir = Path.home() / ".config" / "opencode"
+    config_path = opencode_dir / "config.toml"
+
+    toml_lines = []
+    if config_path.exists():
+        try:
+            content = config_path.read_text()
+            if "[mcp.servers.code-review-graph]" in content:
+                return f"OpenCode: Already configured in {config_path}"
+            toml_lines = content.strip().split("\n")
+        except Exception:
+            pass
+
+    mcp_section = [
+        "[mcp]",
+        "enabled = true",
+        "",
+        "[mcp.servers.code-review-graph]",
+        'command = "uvx"',
+        f'args = ["code-review-graph", "serve", "--repo", "{repo_path}"]',
+    ]
+
+    if toml_lines:
+        final_content = "\n".join(toml_lines + ["", "", ""] + mcp_section)
+    else:
+        final_content = "\n".join(mcp_section)
+
+    if dry_run:
+        print(f"[dry-run] Would write to {config_path}:")
+        print(final_content)
+        return f"[dry-run] OpenCode: Would create {config_path}"
+
+    opencode_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(final_content + "\n")
+    return f"OpenCode: Created {config_path}"
 
 
 def main() -> None:
@@ -135,29 +295,39 @@ def main() -> None:
         prog="code-review-graph",
         description="Persistent incremental knowledge graph for code reviews",
     )
-    ap.add_argument(
-        "-v", "--version", action="store_true", help="Show version and exit"
-    )
+    ap.add_argument("-v", "--version", action="store_true", help="Show version and exit")
     sub = ap.add_subparsers(dest="command")
 
     # install (primary) + init (alias)
     install_cmd = sub.add_parser(
-        "install", help="Register MCP server with Claude Code (creates .mcp.json)"
+        "install", help="Register MCP server with AI tools (creates config files)"
     )
     install_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
     install_cmd.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show what would be done without writing files",
     )
+    install_cmd.add_argument("--all", action="store_true", help="Install for all supported tools")
+    install_cmd.add_argument("--claude", action="store_true", help="Install for Claude Code")
+    install_cmd.add_argument("--gemini", action="store_true", help="Install for Gemini CLI")
+    install_cmd.add_argument("--antigravity", action="store_true", help="Install for Antigravity")
+    install_cmd.add_argument("--cursor", action="store_true", help="Install for Cursor / Windsurf")
+    install_cmd.add_argument("--opencode", action="store_true", help="Install for OpenCode")
 
-    init_cmd = sub.add_parser(
-        "init", help="Alias for install"
-    )
+    init_cmd = sub.add_parser("init", help="Alias for install")
     init_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
     init_cmd.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show what would be done without writing files",
     )
+    init_cmd.add_argument("--all", action="store_true", help="Install for all supported tools")
+    init_cmd.add_argument("--claude", action="store_true", help="Install for Claude Code")
+    init_cmd.add_argument("--gemini", action="store_true", help="Install for Gemini CLI")
+    init_cmd.add_argument("--antigravity", action="store_true", help="Install for Antigravity")
+    init_cmd.add_argument("--cursor", action="store_true", help="Install for Cursor / Windsurf")
+    init_cmd.add_argument("--opencode", action="store_true", help="Install for OpenCode")
 
     # build
     build_cmd = sub.add_parser("build", help="Full graph build (re-parse all files)")
@@ -195,6 +365,7 @@ def main() -> None:
 
     if args.command == "serve":
         from .main import main as serve_main
+
         serve_main()
         return
 
@@ -257,6 +428,7 @@ def main() -> None:
 
         elif args.command == "visualize":
             from .visualization import generate_html
+
             html_path = repo_root / ".code-review-graph" / "graph.html"
             generate_html(store, html_path)
             print(f"Visualization: {html_path}")
